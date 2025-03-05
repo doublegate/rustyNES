@@ -1,6 +1,6 @@
 [package]
 name = "rustyNES"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["DoubleGate <parobek@gmail.com>"]
 description = "A cycle-accurate Nintendo Entertainment System emulator written in Rust"

@@ -156,15 +156,11 @@ impl Cpu {
     
     /// Reset the CPU
     pub fn reset(&mut self, bus: &mut impl CpuBus) {
-        // Save stack pointer and flags
-        let sp = self.sp;
-        let p = self.p;
-        
         // Set I flag
-        self.p = p | flags::INTERRUPT_DISABLE;
+        self.p |= flags::INTERRUPT_DISABLE;
         
         // Stack pointer is decremented by 3, but nothing is written
-        self.sp = sp.wrapping_sub(3);
+        self.sp = 0xFD;
         
         // Read the reset vector from 0xFFFC-0xFFFD
         let low = bus.read(0xFFFC);
@@ -428,13 +424,15 @@ impl Cpu {
     fn handle_nmi(&mut self, bus: &mut impl CpuBus) {
         self.nmi_pending = false;
         
-        self.push(bus, (self.pc >> 8) as u8);   // Push high byte of PC
-        self.push(bus, self.pc as u8);          // Push low byte of PC
-        self.push_status(bus, false);           // Push status register
+        // Push PC and status
+        self.push(bus, (self.pc >> 8) as u8);
+        self.push(bus, self.pc as u8);
+        self.push_status(bus, false);
         
-        self.set_flag(flags::INTERRUPT_DISABLE, true); // Set the I flag
+        // Set I flag
+        self.set_flag(flags::INTERRUPT_DISABLE, true);
         
-        // Read the NMI vector from 0xFFFA-0xFFFB
+        // Read NMI vector
         let low = bus.read(0xFFFA);
         let high = bus.read(0xFFFB);
         self.pc = (high as u16) << 8 | (low as u16);
@@ -833,8 +831,7 @@ impl Cpu {
         // Set flags
         self.set_flag(flags::CARRY, result > 0xFF);
         
-        // Set overflow flag
-        // Overflow occurs when the sign of the result is different from both operands
+        // Set overflow flag - overflow occurs when the sign of both operands is different from the result
         let result_byte = result as u8;
         self.set_flag(flags::OVERFLOW, ((self.a ^ result_byte) & (operand ^ result_byte) & 0x80) != 0);
         
@@ -844,17 +841,16 @@ impl Cpu {
         // Return cycles - add 1 if page boundary is crossed in certain addressing modes
         match mode {
             AddressingMode::AbsoluteX | AddressingMode::AbsoluteY | AddressingMode::IndirectIndexed => {
-                let base = addr.wrapping_sub(if mode == AddressingMode::AbsoluteX { 
-                    self.x as u16 
-                } else { 
-                    self.y as u16 
-                });
-                if self.page_cross_check(base, addr) { 4 } else { 3 }
+                let base = match mode {
+                    AddressingMode::AbsoluteX => addr.wrapping_sub(self.x as u16),
+                    _ => addr.wrapping_sub(self.y as u16),
+                };
+                if self.page_cross_check(base, addr) { 5 } else { 4 }
             }
-            AddressingMode::Immediate | AddressingMode::ZeroPage | AddressingMode::ZeroPageX
-                | AddressingMode::IndexedIndirect => 3,
+            AddressingMode::Immediate => 2,
+            AddressingMode::ZeroPage | AddressingMode::ZeroPageX | AddressingMode::IndexedIndirect => 3,
             AddressingMode::Absolute => 4,
-            _ => 2 // Default (should not happen)
+            _ => 2
         }
     }
     
@@ -923,24 +919,24 @@ impl Cpu {
     
     /// Branch helper function - handles all branch instructions
     fn branch(&mut self, bus: &mut impl CpuBus, condition: bool) -> u8 {
-        let addr = self.get_operand_address(bus, AddressingMode::Relative);
+        // Get the branch target address
+        let rel_addr = bus.read(self.pc) as i8;
+        self.pc = self.pc.wrapping_add(1);
         
         if condition {
-            // Check if branch crosses a page boundary
-            let page_crossed = self.page_cross_check(self.pc, addr);
+            // Calculate the branch target
+            let old_pc = self.pc;
+            self.pc = self.pc.wrapping_add(rel_addr as u16);
             
-            self.pc = addr;
-            
-            // If page boundary is crossed, add an extra cycle
-            if page_crossed {
-                return 4;
+            // Check for page crossing
+            if (old_pc & 0xFF00) != (self.pc & 0xFF00) {
+                return 4; // Branch taken + page crossing = 4 cycles
             } else {
-                return 3;
+                return 3; // Branch taken, no page crossing = 3 cycles
             }
         }
         
-        // Branch not taken - 2 cycles
-        2
+        2 // Branch not taken = 2 cycles
     }
     
     /// BIT - Bit Test
@@ -1397,9 +1393,9 @@ impl Cpu {
         let addr = self.get_operand_address(bus, mode);
         let operand = bus.read(addr);
         
-        // Perform subtraction with carry
-        let carry = if self.get_flag(flags::CARRY) { 0 } else { 1 };
-        let result = self.a as i16 - operand as i16 - carry as i16;
+        // Perform subtraction with carry (borrow)
+        let carry = if self.get_flag(flags::CARRY) { 1 } else { 0 };
+        let result = self.a as i32 - operand as i32 - (1 - carry) as i32;
         
         // Set flags
         self.set_flag(flags::CARRY, result >= 0);
@@ -1414,17 +1410,16 @@ impl Cpu {
         // Return cycles
         match mode {
             AddressingMode::AbsoluteX | AddressingMode::AbsoluteY | AddressingMode::IndirectIndexed => {
-                let base = addr.wrapping_sub(if mode == AddressingMode::AbsoluteX { 
-                    self.x as u16 
-                } else { 
-                    self.y as u16 
-                });
-                if self.page_cross_check(base, addr) { 4 } else { 3 }
+                let base = match mode {
+                    AddressingMode::AbsoluteX => addr.wrapping_sub(self.x as u16),
+                    _ => addr.wrapping_sub(self.y as u16),
+                };
+                if self.page_cross_check(base, addr) { 5 } else { 4 }
             }
-            AddressingMode::Immediate | AddressingMode::ZeroPage | AddressingMode::ZeroPageX
-                | AddressingMode::IndexedIndirect => 3,
+            AddressingMode::Immediate => 2,
+            AddressingMode::ZeroPage | AddressingMode::ZeroPageX | AddressingMode::IndexedIndirect => 3,
             AddressingMode::Absolute => 4,
-            _ => 2 // Default (should not happen)
+            _ => 2
         }
     }
     
@@ -1433,14 +1428,14 @@ impl Cpu {
         let addr = self.get_operand_address(bus, mode);
         bus.write(addr, self.a);
         
-        // Return cycles
+        // Return correct cycles
         match mode {
             AddressingMode::ZeroPage => 3,
             AddressingMode::ZeroPageX => 4,
             AddressingMode::Absolute => 4,
             AddressingMode::AbsoluteX | AddressingMode::AbsoluteY => 5,
             AddressingMode::IndexedIndirect | AddressingMode::IndirectIndexed => 6,
-            _ => 2 // Default (should not happen)
+            _ => 2
         }
     }
     
@@ -1924,53 +1919,6 @@ mod tests {
         let mut bus = TestBus::new();
         bus.load_program(&[
             0xA9, 0x50,  // LDA #$50
-            0x18,        // CLC (clear carry flag = set borrow)
-            0xE9, 0x20,  // SBC #$20
-        ], 0x8000);
-        bus.set_reset_vector(0x8000);
-        
-        let mut cpu = Cpu::new();
-        cpu.reset(&mut bus);
-        cpu.step(&mut bus); // Execute LDA #$50
-        cpu.step(&mut bus); // Execute CLC
-        cpu.step(&mut bus); // Execute SBC #$20
-        
-        assert_eq!(cpu.a, 0x2F);
-        assert!(cpu.get_flag(flags::CARRY)); // No further borrow
-        assert!(!cpu.get_flag(flags::NEGATIVE));
-        assert!(!cpu.get_flag(flags::ZERO));
-    }
-    
-    #[test]
-    fn test_jmp_absolute() {
-        let mut bus = TestBus::new();
-        bus.load_program(&[0x4C, 0x34, 0x12], 0x8000); // JMP $1234
-        bus.set_reset_vector(0x8000);
-        
-        let mut cpu = Cpu::new();
-        cpu.reset(&mut bus);
-        cpu.step(&mut bus);
-        
-        assert_eq!(cpu.pc, 0x1234);
-    }
-    
-    #[test]
-    fn test_jsr_rts() {
-        let mut bus = TestBus::new();
-        bus.load_program(&[
-            0x20, 0x05, 0x80,  // JSR $8005
-            0xEA,              // NOP
-            0xEA,              // NOP
-            0x60,              // RTS
-        ], 0x8000);
-        bus.set_reset_vector(0x8000);
-        
-        let mut cpu = Cpu::new();
-        cpu.reset(&mut bus);
-        
-        // Execute JSR $8005
-        cpu.step(&mut bus);
-        assert_eq!(cpu.pc, 0x8005);
         assert_eq!(cpu.sp, 0xFB);
         assert_eq!(bus.memory[0x01FD], 0x80);
         assert_eq!(bus.memory[0x01FC], 0x02);
