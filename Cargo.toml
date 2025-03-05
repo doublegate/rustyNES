@@ -1,0 +1,32 @@
+[package]
+name = "rustyNES"
+version = "0.1.0"
+edition = "2021"
+authors = ["DoubleGate <parobek@gmail.com>"]
+description = "A cycle-accurate Nintendo Entertainment System emulator written in Rust"
+repository = "https://github.com/doublegate/rustyNES"
+license = "MIT"
+keywords = ["emulator", "nes", "nintendo", "gaming", "retro"]
+categories = ["emulators"]
+readme = "README.md"
+
+[dependencies]
+# Core dependencies
+log = "0.4"
+env_logger = "0.11.6"
+
+# For optional GUI
+# sdl2 = { version = "0.35", optional = true }
+
+[features]
+default = []
+# gui = ["sdl2"]
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
