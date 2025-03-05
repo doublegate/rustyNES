@@ -1,0 +1,43 @@
+Running unittests src\main.rs (target\debug\deps\rustyNES-4f1a90ec54bc839f.exe)
+
+running 18 tests
+test nes_cpu::tests::test_adc ... ok
+test nes_cpu::tests::test_branch_not_taken ... ok
+test nes_cpu::tests::test_branch_page_cross ... FAILED
+test nes_cpu::tests::test_adc_with_carry ... ok
+test nes_cpu::tests::test_branch_taken ... ok
+test nes_cpu::tests::test_brk_and_rti ... ok
+test nes_cpu::tests::test_lda_immediate ... ok
+test nes_cpu::tests::test_ldy_immediate ... ok
+test nes_cpu::tests::test_lda_negative_flag ... ok
+test nes_cpu::tests::test_sbc ... ok
+test nes_cpu::tests::test_sbc_with_borrow ... ok
+test nes_cpu::tests::test_ldx_immediate ... ok
+test nes_cpu::tests::test_nmi ... FAILED
+test nes_cpu::tests::test_lda_zero_flag ... ok
+test nes_cpu::tests::test_sta_zero_page ... ok
+test nes_cpu::tests::test_stack_operations ... ok
+test nes_cpu::tests::test_unofficial_lax ... ok
+test nes_cpu::tests::test_reset ... ok
+
+failures:
+
+---- nes_cpu::tests::test_branch_page_cross stdout ----
+thread 'nes_cpu::tests::test_branch_page_cross' panicked at src\nes_cpu.rs:1981:9:
+assertion `left == right` failed
+  left: 33142
+ right: 33139
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- nes_cpu::tests::test_nmi stdout ----
+thread 'nes_cpu::tests::test_nmi' panicked at src\nes_cpu.rs:2010:9:
+assertion `left == right` failed
+  left: 36864
+ right: 32768
+
+
+failures:
+    nes_cpu::tests::test_branch_page_cross
+    nes_cpu::tests::test_nmi
+
+test result: FAILED. 16 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

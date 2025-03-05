@@ -3,7 +3,7 @@
 RustyNES - Nintendo Entertainment System (NES) Emulator (Rust Language)
 
 ![License](https://img.shields.io/github/license/doublegate/rustyNES)
-![Version](https://img.shields.io/badge/version-0.1.0-blue)
+![Version](https://img.shields.io/badge/version-0.1.2-blue)
 
 ## Features
 

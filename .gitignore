@@ -27,4 +27,5 @@ Cargo.lock
 /doc/
 
 # Test artifacts
+/tests/
 testdata/
