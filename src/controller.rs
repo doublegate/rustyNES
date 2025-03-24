@@ -50,28 +50,51 @@ impl Controller {
         } else {
             self.button_state &= !button;
         }
+        
+        // When strobe is high, continuously reload shift register
+        if self.strobe {
+            self.shift_register = self.button_state;
+        }
     }
 
     /// Write to the controller (strobe)
     pub fn write(&mut self, value: u8) {
-        self.strobe = (value & 0x01) != 0;
+        let new_strobe = (value & 0x01) != 0;
         
-        if self.strobe {
-            // When strobe is high, continuously reload shift register with button state
+        // If strobe goes high, reload shift register
+        if new_strobe && !self.strobe {
             self.shift_register = self.button_state;
         }
+        
+        self.strobe = new_strobe;
     }
 
     /// Read from the controller
     pub fn read(&mut self) -> u8 {
         if self.strobe {
-            // When strobe is high, return button A state (bit 0)
-            (self.button_state & 0x01) | 0xE0
-        } else {
-            // When strobe is low, shift out bits one at a time
-            let result = self.shift_register & 0x01;
-            self.shift_register = 0x80 | (self.shift_register >> 1);
-            result | 0xE0
+            // When strobe is high, continuously return button A state (bit 0)
+            return self.button_state & 0x01;
+        }
+        
+        // When strobe is low, shift out bits and return lowest bit
+        let result = self.shift_register & 0x01;
+        self.shift_register = (self.shift_register >> 1) | 0x80; // Shift and set high bit
+        result
+    }
+
+    /// Get the strobe state
+    pub fn get_strobe(&self) -> bool {
+        self.strobe
+    }
+
+    /// Set the strobe state
+    pub fn set_strobe(&mut self, value: bool) {
+        let old_strobe = self.strobe;
+        self.strobe = value;
+        
+        // If strobe goes high, reload shift register
+        if value && !old_strobe {
+            self.shift_register = self.button_state;
         }
     }
 }

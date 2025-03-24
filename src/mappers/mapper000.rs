@@ -22,6 +22,9 @@ pub struct Mapper000 {
     
     /// Mirroring mode
     mirroring: Mirroring,
+    
+    /// PRG ROM mask for fast address calculation
+    prg_mask: u16,
 }
 
 impl Mapper000 {
@@ -34,47 +37,73 @@ impl Mapper000 {
             chr_rom
         };
         
+        // Calculate PRG mask for fast address mapping
+        // 16KB PRG ROM gets mirrored to fill the 32KB space
+        let prg_mask = if prg_rom.len() <= 16 * 1024 { 0x3FFF } else { 0x7FFF };
+        
         Mapper000 {
             prg_rom,
             chr,
             chr_is_ram,
             mirroring,
+            prg_mask,
         }
     }
 }
 
 impl Mapper for Mapper000 {
+    #[inline]
     fn read_prg(&self, addr: u16) -> u8 {
-        let mask = if self.prg_rom.len() <= 16 * 1024 { 0x3FFF } else { 0x7FFF };
-        self.prg_rom[(addr & mask) as usize]
+        // Fast address calculation using pre-computed mask
+        let mapped_addr = (addr & self.prg_mask) as usize;
+        if mapped_addr < self.prg_rom.len() {
+            self.prg_rom[mapped_addr]
+        } else {
+            0  // Return 0 for out-of-bounds access
+        }
     }
     
+    #[inline]
     fn write_prg(&mut self, _addr: u16, _data: u8) {
         // PRG ROM is read-only in NROM
     }
     
+    #[inline]
     fn read_chr(&self, addr: u16) -> u8 {
-        self.chr[(addr & 0x1FFF) as usize]
-    }
-    
-    fn write_chr(&mut self, addr: u16, data: u8) {
-        if self.chr_is_ram {
-            self.chr[(addr & 0x1FFF) as usize] = data;
+        let mapped_addr = (addr & 0x1FFF) as usize;
+        if mapped_addr < self.chr.len() {
+            self.chr[mapped_addr]
+        } else {
+            0  // Return 0 for out-of-bounds access
         }
     }
     
+    #[inline]
+    fn write_chr(&mut self, addr: u16, data: u8) {
+        if self.chr_is_ram {
+            let mapped_addr = (addr & 0x1FFF) as usize;
+            if mapped_addr < self.chr.len() {
+                self.chr[mapped_addr] = data;
+            }
+        }
+    }
+    
+    #[inline]
     fn mirroring(&self) -> Mirroring {
         self.mirroring
     }
     
+    #[inline]
     fn irq_triggered(&self) -> bool {
         false
     }
     
+    #[inline]
     fn acknowledge_irq(&mut self) {
         // No IRQ in NROM
     }
     
+    #[inline]
     fn notify_scanline(&mut self) {
         // No scanline counter in NROM
     }

@@ -96,7 +96,7 @@ impl MemoryBus {
     }
 
     // Updated read method to use the mapper system
-    pub fn read(&mut self, addr: u16) -> u8 {
+    pub fn read(&self, addr: u16) -> u8 {
         match addr {
             // Internal RAM and mirrors
             0x0000..=0x1FFF => {
@@ -106,13 +106,24 @@ impl MemoryBus {
             
             // PPU registers and mirrors
             0x2000..=0x3FFF => {
-                let reg_addr = ((addr - 0x2000) & 0x0007) as usize;
-                self.read_ppu_register(reg_addr)
+                let reg = ((addr - 0x2000) & 0x0007) as usize;
+                self.ppu_registers[reg]
             },
             
             // APU and I/O registers
             0x4000..=0x4017 => {
-                self.read_apu_io_register(addr)
+                let reg = (addr & 0x1F) as usize;
+                match addr {
+                    0x4016 => {
+                        // Controller 1 read
+                        self.apu_io_registers[22] & 0xE0
+                    },
+                    0x4017 => {
+                        // Controller 2 read
+                        self.apu_io_registers[23] & 0xE0
+                    },
+                    _ => self.apu_io_registers[reg],
+                }
             },
             
             // APU and I/O functionality (normally disabled)
@@ -144,13 +155,38 @@ impl MemoryBus {
             
             // PPU registers and mirrors
             0x2000..=0x3FFF => {
-                let reg_addr = ((addr - 0x2000) & 0x0007) as usize;
-                self.write_ppu_register(reg_addr, value);
+                let reg = ((addr - 0x2000) & 0x0007) as usize;
+                self.ppu_registers[reg] = value;
+                
+                // Handle special PPU register writes
+                match reg {
+                    // PPUCTRL ($2000)
+                    0 => {
+                        let mut ppu = self.ppu.borrow_mut();
+                        ppu.nmi_output = (value & 0x80) != 0;
+                        if ppu.nmi_output && ppu.nmi_occurred {
+                            self.nmi_pending = true;
+                        }
+                    },
+                    // Other registers...
+                    _ => {}
+                }
             },
             
             // APU and I/O registers
             0x4000..=0x4017 => {
-                self.write_apu_io_register(addr, value);
+                let reg = (addr & 0x1F) as usize;
+                match addr {
+                    0x4016 => {
+                        // Controller 1 write
+                        self.apu_io_registers[22] = value;
+                    },
+                    0x4017 => {
+                        // Controller 2 write
+                        self.apu_io_registers[23] = value;
+                    },
+                    _ => self.apu_io_registers[reg] = value,
+                }
             },
             
             // APU and I/O functionality (normally disabled)
@@ -264,11 +300,15 @@ impl MemoryBus {
                 {
                     let mut ppu = self.ppu.borrow_mut();
                     ppu.t = (ppu.t & 0xF3FF) | ((value as u16 & 0x03) << 10);
+                    
+                    // Update NMI output flag based on bit 7
+                    ppu.nmi_output = (value & 0x80) != 0;
                 }
                 
                 // If NMI enable changes from 0 to 1 during VBlank, trigger NMI
                 if nmi_change != 0 && (value & 0x80) != 0 && (self.ppu_registers[2] & 0x80) != 0 {
-                    self.nmi_pending = true;
+                    self.ppu.borrow_mut().nmi_occurred = true;
+                    self.set_nmi_pending(true);
                 }
             },
             
@@ -426,20 +466,25 @@ impl MemoryBus {
         match addr {
             // Controller 1 ($4016)
             0x4016 => {
-                // Controller 1 read handled in controller module
-                self.apu_io_registers[0x16]
+                // Controller 1 read is handled externally by providing the value
+                // This will be connected properly in the NES run_frame method
+                self.apu_io_registers[22] & 0xE0
             },
             
             // Controller 2 ($4017)
             0x4017 => {
-                // Controller 2 read handled in controller module
-                self.apu_io_registers[0x17]
+                // Controller 2 read is handled externally
+                self.apu_io_registers[23] & 0xE0
             },
             
             // Other APU and I/O registers
             _ => {
-                let reg = (addr - 0x4000) as usize;
-                self.apu_io_registers[reg]
+                let reg = (addr & 0x1F) as usize;
+                if reg < self.apu_io_registers.len() {
+                    self.apu_io_registers[reg]
+                } else {
+                    0 // Default value for out-of-range registers
+                }
             }
         }
     }
@@ -455,22 +500,24 @@ impl MemoryBus {
                 // OAM DMA will be performed in the NES main loop
             },
             
-            // Controller 1 ($4016)
+            // Controller 1 and 2 ($4016)
             0x4016 => {
-                // Controller strobe handling
-                self.apu_io_registers[0x16] = value;
+                // Store strobe value, actual controller update happens in NES
+                self.apu_io_registers[22] = value;
             },
             
-            // Controller 2 and APU frame counter ($4017)
+            // APU frame counter ($4017)
             0x4017 => {
-                // APU frame counter and controller 2 handling
-                self.apu_io_registers[0x17] = value;
+                // APU frame counter handling
+                self.apu_io_registers[23] = value;
             },
             
             // Other APU and I/O registers
             _ => {
-                let reg = (addr - 0x4000) as usize;
-                self.apu_io_registers[reg] = value;
+                let reg = (addr & 0x1F) as usize;
+                if reg < self.apu_io_registers.len() {
+                    self.apu_io_registers[reg] = value;
+                }
             }
         }
     }
@@ -506,21 +553,21 @@ impl MemoryBus {
             return 0;
         }
         
-        // OAM DMA takes 513 or 514 CPU cycles (depending on whether it starts on an odd or even cycle)
-        // We'll assume 514 for simplicity
-        let dma_source_base = (self.oam_dma_page as u16) << 8;
+        let dma_source_base = u16::from(self.oam_dma_page) << 8;
         
         for i in 0..256 {
-            let source_addr = dma_source_base + i;
+            let source_addr = dma_source_base.wrapping_add(i);
             let value = self.read(source_addr);
             
-            // Write to OAM through OAMDATA ($2004)
-            self.write(0x2004, value);
+            // Write directly to OAM (avoid going through OAMDATA/$2004)
+            let oam_addr = self.oam_dma_addr.wrapping_add(i as u8) as usize;
+            self.ppu.borrow_mut().oam[oam_addr % 256] = value;
         }
         
         self.oam_dma_active = false;
         
-        // Return the number of cycles consumed
+        // OAM DMA takes 513 or 514 CPU cycles (depending on whether it starts on an odd or even cycle)
+        // We'll use 514 for simplicity
         514
     }
 

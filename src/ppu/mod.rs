@@ -267,8 +267,12 @@ impl PPU {
         if self.scanline == 241 && self.cycle == 1 {
             self.nmi_occurred = true;
             
+            // Update NMI output based on PPUCTRL register (bit 7)
+            self.nmi_output = (bus.ppu_registers[0] & 0x80) != 0;
+            
             if self.nmi_output && !self.suppress_vblank {
-                bus.ppu_registers[2] |= 0x80;
+                bus.ppu_registers[2] |= 0x80; // Set VBlank flag in PPUSTATUS
+                bus.set_nmi_pending(true);    // Signal NMI to the memory bus
             }
         }
         
@@ -291,6 +295,15 @@ impl PPU {
                     self.frame += 1;
                 }
             }
+        }
+    }
+
+    /// Check for and trigger NMI
+    pub fn check_nmi(&mut self, bus: &mut MemoryBus) {
+        // If NMI is pending and enabled, signal to memory bus
+        if self.nmi_occurred && self.nmi_output && !self.suppress_vblank {
+            bus.set_nmi_pending(true);
+            self.nmi_occurred = false;  // Clear the occurred flag after signaling
         }
     }
 
@@ -458,37 +471,36 @@ impl PPU {
     }
 
     /// Determine the final pixel color by combining background and sprite pixels
+    /// This is a performance-critical function, so we've optimized it
+    #[inline]
     fn get_pixel_color(&mut self, bg_pixel: (u8, u8), sprite_pixel: (u8, u8, bool, bool)) -> (u8, bool) {
         let (bg_palette, bg_pixel_value) = bg_pixel;
         let (sprite_palette, sprite_pixel_value, sprite_priority, sprite_zero) = sprite_pixel;
         
-        // Check if pixels are transparent
-        let bg_transparent = bg_pixel_value == 0;
-        let sprite_transparent = sprite_pixel_value == 0;
-        
-        // Handle sprite zero hit detection
-        if !bg_transparent && !sprite_transparent && sprite_zero && self.cycle != 255 {
+        // Check for sprite zero hit (optimize this check)
+        if bg_pixel_value != 0 && sprite_pixel_value != 0 && sprite_zero && self.cycle != 255 {
             self.sprites.sprite_zero_hit = true;
         }
         
-        // Determine final pixel
-        if bg_transparent && sprite_transparent {
-            // Both transparent, show background color
-            (0, false)
-        } else if bg_transparent && !sprite_transparent {
-            // Background transparent, show sprite
-            (0x10 + (sprite_palette * 4 + sprite_pixel_value) as u8, false)
-        } else if !bg_transparent && sprite_transparent {
-            // Sprite transparent, show background
-            (bg_palette * 4 + bg_pixel_value, false)
+        // Using if-else instead of match for better performance
+        if bg_pixel_value == 0 {
+            if sprite_pixel_value == 0 {
+                // Both transparent, show universal background color
+                (0, false)
+            } else {
+                // Background transparent, sprite visible
+                (0x10 | (sprite_palette << 2) | sprite_pixel_value, false)
+            }
         } else {
-            // Both non-transparent, use priority
-            if sprite_priority {
+            if sprite_pixel_value == 0 {
+                // Sprite transparent, background visible
+                ((bg_palette << 2) | bg_pixel_value, false)
+            } else if sprite_priority {
                 // Sprite behind background
-                (bg_palette * 4 + bg_pixel_value, true)
+                ((bg_palette << 2) | bg_pixel_value, true)
             } else {
                 // Sprite in front of background
-                (0x10 + (sprite_palette * 4 + sprite_pixel_value) as u8, false)
+                (0x10 | (sprite_palette << 2) | sprite_pixel_value, false)
             }
         }
     }

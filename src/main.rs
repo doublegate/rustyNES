@@ -65,7 +65,7 @@ fn main() -> Result<()> {
     };
     
     // Create and initialize the NES
-    let mut nes = NES::new(tv_system);
+    let mut nes = NES::new(tv_system, args.scale);
     
     // Load the ROM file
     let rom_path = args.rom_path.to_string_lossy();

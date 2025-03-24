@@ -104,23 +104,26 @@ impl CPU {
             return 7; // Reset takes 7 cycles
         }
         
-        // Handle interrupts
-        if self.check_interrupts(bus) {
+        // Check for interrupts - NMI takes priority over IRQ
+        if bus.peek_nmi() {
+            self.handle_nmi(bus);
             return self.cycles as u32;
         }
         
-        // Fetch instruction
+        if bus.peek_irq() && (self.p & flags::INTERRUPT_DISABLE) == 0 {
+            self.handle_irq(bus);
+            return self.cycles as u32;
+        }
+        
+        // Existing instruction fetch and execution...
         let opcode = bus.read(self.pc);
         self.pc = self.pc.wrapping_add(1);
         
-        // Execute instruction
         trace!("CPU: ${:04X}: ${:02X} A:{:02X} X:{:02X} Y:{:02X} P:{:02X} SP:{:02X}",
               self.pc.wrapping_sub(1), opcode, self.a, self.x, self.y, self.p, self.sp);
         
-        // Decode and execute the instruction
         self.execute_instruction(opcode, bus);
         
-        // Convert cycles to u32 for return value
         let cycles_used = self.cycles as u32;
         self.total_cycles += cycles_used as u64;
         
@@ -150,7 +153,8 @@ impl CPU {
         
         // Push PC and processor status to stack
         self.push_word(bus, self.pc);
-        self.push_byte(bus, self.p & !flags::BREAK);
+        // Push status without BREAK flag but with UNUSED flag
+        self.push_byte(bus, (self.p & !flags::BREAK) | flags::UNUSED);
         
         // Set the interrupt flag
         self.p |= flags::INTERRUPT_DISABLE;
@@ -172,7 +176,8 @@ impl CPU {
         
         // Push PC and processor status to stack
         self.push_word(bus, self.pc);
-        self.push_byte(bus, self.p & !flags::BREAK);
+        // Push status without BREAK flag but with UNUSED flag
+        self.push_byte(bus, (self.p & !flags::BREAK) | flags::UNUSED);
         
         // Set the interrupt flag
         self.p |= flags::INTERRUPT_DISABLE;
