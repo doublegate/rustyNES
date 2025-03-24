@@ -4,8 +4,6 @@
 //! This module handles the state of the controllers and the reading/writing of
 //! controller data.
 
-// use log::trace;
-
 /// NES Controller
 pub struct Controller {
     /// Current button state (8 buttons)

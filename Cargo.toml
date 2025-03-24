@@ -12,10 +12,13 @@ readme = "README.md"
 log = "0.4"
 env_logger = "0.11.7"
 clap = { version = "4.3", features = ["derive"] }
-sdl2 = "0.37.0"
+sdl2 = { version = "0.37.0", features = ["bundled"] }
 anyhow = "1.0"
 thiserror = "2.0.12"
 windows = { version = "0.61.1", features = ["Win32_Graphics_Direct2D", "Win32_Graphics_Direct2D_Common", "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+bincode = "2.0.1"
+serde = { version = "1.0.219", features = ["derive"] }
+image = "0.25.5"
 
 [profile.release]
 lto = true
@@ -23,6 +26,3 @@ codegen-units = 1
 panic = "abort"
 opt-level = 3
 debug = false
-
-# [target.'cfg(target_os = "windows")'.build]
-# rustflags = ["-L", "C:/vcpkg/installed/x64-windows/lib"]

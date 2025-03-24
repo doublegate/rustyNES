@@ -621,7 +621,7 @@ impl APU {
     }
 
     /// Step DMC timer
-    fn step_dmc_timer(&mut self, bus: &mut MemoryBus) {
+    fn step_dmc_timer(&mut self, _bus: &mut MemoryBus) {
         // DMC playback handling
         // In a complete implementation, this would handle DMC sample loading and playback
         if self.dmc.timer > 0 {

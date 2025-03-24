@@ -4,9 +4,15 @@
 //! and mappers. The NES uses a cartridge system with separate PRG ROM (program code)
 //! and CHR ROM/RAM (character/graphics data).
 
+use std::cell::RefCell;
 use std::fmt;
-use log::{debug, info, warn};
+use std::rc::Rc;
+use log::info;
 use thiserror::Error;
+use serde::{Serialize, Deserialize};
+
+use crate::mappers::Mapper;
+use crate::mappers::create_mapper;
 
 /// Size of the iNES header
 const INES_HEADER_SIZE: usize = 16;
@@ -34,7 +40,7 @@ pub enum ROMParseError {
 }
 
 /// Mirroring modes for the NES
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mirroring {
     /// Horizontal mirroring (vertical arrangement of nametables)
     Horizontal,
@@ -54,32 +60,29 @@ pub enum Mirroring {
 
 /// Represents an NES cartridge
 pub struct Cartridge {
-    /// PRG ROM data
-    prg_rom: Vec<u8>,
+    /// Mapper implementation
+    mapper: Rc<RefCell<Box<dyn Mapper>>>,
     
-    /// PRG RAM data
-    prg_ram: Vec<u8>,
-    
-    /// CHR ROM/RAM data
-    chr: Vec<u8>,
-    
-    /// Whether CHR is RAM (writable) or ROM (read-only)
-    chr_is_ram: bool,
-    
-    /// Mapper number
-    mapper: u8,
-    
-    /// Mirroring mode
+    /// Mirroring mode (from header, may be overridden by mapper)
     mirroring: Mirroring,
     
     /// Whether battery-backed RAM is present
     has_battery: bool,
     
-    /// Current PRG ROM bank for bankable region
-    prg_bank: usize,
+    /// Whether NTSC or PAL is used
+    is_pal: bool,
     
-    /// Current CHR ROM/RAM bank
-    chr_bank: usize,
+    /// PRG ROM size in bytes
+    prg_rom_size: usize,
+    
+    /// CHR ROM size in bytes
+    chr_rom_size: usize,
+    
+    /// PRG RAM size in bytes
+    prg_ram_size: usize,
+    
+    /// Mapper number
+    mapper_number: u8,
 }
 
 impl Cartridge {
@@ -96,6 +99,7 @@ impl Cartridge {
         
         let flags6 = data[6];
         let flags7 = data[7];
+        let flags9 = data[9];
         
         let mirroring = if (flags6 & 0x08) != 0 {
             Mirroring::FourScreen
@@ -113,6 +117,29 @@ impl Cartridge {
         let mapper_high = flags7 & 0xF0;
         let mapper = mapper_high | mapper_low;
         
+        // Check if this is an NES 2.0 format ROM
+        let is_nes2 = (flags7 & 0x0C) == 0x08;
+        
+        // Check if PAL or NTSC
+        let is_pal = (flags9 & 0x01) != 0;
+        
+        // Calculate PRG RAM size
+        let prg_ram_size = if is_nes2 {
+            // NES 2.0 format
+            if data[10] & 0x0F == 0 {
+                0
+            } else {
+                64 << ((data[10] & 0x0F) - 1)
+            }
+        } else {
+            // iNES format
+            if data[8] == 0 {
+                8 * 1024 // Default to 8KB
+            } else {
+                data[8] as usize * 8 * 1024
+            }
+        };
+        
         // Check if trainer is present (512 bytes before PRG ROM)
         let trainer_size = if has_trainer { 512 } else { 0 };
         
@@ -127,8 +154,8 @@ impl Cartridge {
             return Err(ROMParseError::TrainerNotSupported);
         }
         
-        // For now, we only support mappers 0 and 1 (NROM and MMC1)
-        if mapper != 0 && mapper != 1 {
+        // For now, we only support mappers 0-4
+        if mapper > 4 {
             return Err(ROMParseError::UnsupportedMapper(mapper));
         }
         
@@ -138,228 +165,127 @@ impl Cartridge {
         let prg_rom = data[prg_rom_start..prg_rom_end].to_vec();
         
         // Load CHR ROM or create CHR RAM
-        let chr_is_ram = chr_rom_size == 0;
-        let chr = if chr_is_ram {
-            // Create 8KB of CHR RAM
-            vec![0; CHR_BANK_SIZE]
+        let chr_rom = if chr_rom_size == 0 {
+            Vec::new() // CHR RAM will be created by the mapper
         } else {
             let chr_rom_start = prg_rom_end;
             let chr_rom_end = chr_rom_start + chr_rom_size;
             data[chr_rom_start..chr_rom_end].to_vec()
         };
         
-        // Create PRG RAM (8KB)
-        let prg_ram = vec![0; 8 * 1024];
+        // Create PRG RAM
+        let prg_ram = vec![0; prg_ram_size];
         
-        info!("Loaded cartridge - Mapper: {}, PRG ROM: {}KB, CHR {}: {}KB, Mirroring: {:?}, Battery: {}",
-             mapper, prg_rom_size / 1024, if chr_is_ram { "RAM" } else { "ROM" }, 
-             chr.len() / 1024, mirroring, has_battery);
+        // Determine CHR RAM size if CHR ROM is empty
+        let chr_ram_size = if chr_rom_size == 0 {
+            8 * 1024 // Default to 8KB
+        } else {
+            0
+        };
+        
+        // Create mapper
+        let mapper_impl = create_mapper(
+            mapper,
+            prg_rom,
+            chr_rom,
+            prg_ram,
+            chr_ram_size,
+            mirroring,
+        );
+        
+        info!("Loaded cartridge - Mapper: {}, PRG ROM: {}KB, CHR {}: {}KB, Mirroring: {:?}, Battery: {}, TV System: {}",
+             mapper, prg_rom_size / 1024,
+             if chr_rom_size == 0 { "RAM" } else { "ROM" },
+             if chr_rom_size == 0 { chr_ram_size } else { chr_rom_size } / 1024,
+             mirroring, has_battery, if is_pal { "PAL" } else { "NTSC" });
         
         Ok(Cartridge {
-            prg_rom,
-            prg_ram,
-            chr,
-            chr_is_ram,
-            mapper,
+            mapper: Rc::new(RefCell::new(mapper_impl)),
             mirroring,
             has_battery,
-            prg_bank: 0,
-            chr_bank: 0,
+            is_pal,
+            prg_rom_size,
+            chr_rom_size,
+            prg_ram_size,
+            mapper_number: mapper,
         })
     }
 
-    /// Read a byte from the cartridge
-    pub fn read(&mut self, addr: u16) -> u8 {
-        match addr {
-            // PRG ROM - 16KB (single bank) or 32KB (fixed)
-            0x8000..=0xFFFF => {
-                match self.mapper {
-                    // Mapper 0 (NROM)
-                    0 => {
-                        // For 16KB PRG ROM, mirror 0x8000-0xBFFF to 0xC000-0xFFFF
-                        let effective_addr = if self.prg_rom.len() == PRG_ROM_BANK_SIZE {
-                            (addr & 0x3FFF) as usize
-                        } else {
-                            (addr & 0x7FFF) as usize
-                        };
-                        
-                        if effective_addr < self.prg_rom.len() {
-                            self.prg_rom[effective_addr]
-                        } else {
-                            warn!("Read from invalid PRG ROM address: ${:04X}", addr);
-                            0
-                        }
-                    },
-                    
-                    // Mapper 1 (MMC1)
-                    1 => {
-                        // Simplified MMC1 implementation
-                        match addr {
-                            // First 16KB bank (switchable or fixed)
-                            0x8000..=0xBFFF => {
-                                let bank_addr = (self.prg_bank * PRG_ROM_BANK_SIZE) + ((addr - 0x8000) as usize);
-                                if bank_addr < self.prg_rom.len() {
-                                    self.prg_rom[bank_addr]
-                                } else {
-                                    warn!("Read from invalid PRG ROM bank address: ${:04X}", addr);
-                                    0
-                                }
-                            },
-                            
-                            // Last 16KB bank (fixed to last bank or switchable)
-                            0xC000..=0xFFFF => {
-                                let last_bank = (self.prg_rom.len() / PRG_ROM_BANK_SIZE) - 1;
-                                let bank_addr = (last_bank * PRG_ROM_BANK_SIZE) + ((addr - 0xC000) as usize);
-                                if bank_addr < self.prg_rom.len() {
-                                    self.prg_rom[bank_addr]
-                                } else {
-                                    warn!("Read from invalid PRG ROM last bank address: ${:04X}", addr);
-                                    0
-                                }
-                            },
-                            
-                            _ => unreachable!(),
-                        }
-                    },
-                    
-                    _ => {
-                        warn!("Read from unsupported mapper {} at address ${:04X}", self.mapper, addr);
-                        0
-                    }
-                }
-            },
-            
-            // PRG RAM - 8KB
-            0x6000..=0x7FFF => {
-                let ram_addr = (addr - 0x6000) as usize;
-                if ram_addr < self.prg_ram.len() {
-                    self.prg_ram[ram_addr]
-                } else {
-                    warn!("Read from invalid PRG RAM address: ${:04X}", addr);
-                    0
-                }
-            },
-            
-            _ => {
-                warn!("Read from invalid cartridge address: ${:04X}", addr);
-                0
-            }
-        }
+    /// Read a byte from the cartridge (CPU space)
+    pub fn read(&self, addr: u16) -> u8 {
+        self.mapper.borrow().read_prg(addr)
     }
 
-    /// Write a byte to the cartridge
-    pub fn write(&mut self, addr: u16, value: u8) {
-        match addr {
-            // PRG ROM / Mapper registers
-            0x8000..=0xFFFF => {
-                match self.mapper {
-                    // Mapper 0 (NROM)
-                    0 => {
-                        // PRG ROM is read-only
-                        warn!("Attempted write to read-only PRG ROM: ${:04X} = ${:02X}", addr, value);
-                    },
-                    
-                    // Mapper 1 (MMC1)
-                    1 => {
-                        // Writing to any address in 0x8000-0xFFFF updates mapper registers
-                        self.update_mmc1_registers(addr, value);
-                    },
-                    
-                    _ => {
-                        warn!("Write to unsupported mapper {} at address ${:04X} = ${:02X}", 
-                             self.mapper, addr, value);
-                    }
-                }
-            },
-            
-            // PRG RAM - 8KB
-            0x6000..=0x7FFF => {
-                let ram_addr = (addr - 0x6000) as usize;
-                if ram_addr < self.prg_ram.len() {
-                    self.prg_ram[ram_addr] = value;
-                } else {
-                    warn!("Write to invalid PRG RAM address: ${:04X} = ${:02X}", addr, value);
-                }
-            },
-            
-            _ => {
-                warn!("Write to invalid cartridge address: ${:04X} = ${:02X}", addr, value);
-            }
-        }
+    /// Write a byte to the cartridge (CPU space)
+    pub fn write(&self, addr: u16, value: u8) {
+        self.mapper.borrow_mut().write_prg(addr, value);
     }
 
-    /// Update MMC1 registers through serial writes
-    fn update_mmc1_registers(&mut self, addr: u16, value: u8) {
-        // MMC1 register updates are not implemented in this simplified version
-        // In a complete implementation, this would handle the MMC1 shift register
-        // and update PRG/CHR banking and mirroring accordingly
-        
-        debug!("MMC1 register write: ${:04X} = ${:02X}", addr, value);
-        
-        // Reset signal if bit 7 is set
-        if (value & 0x80) != 0 {
-            // Reset MMC1 registers
-            self.prg_bank = 0;
-            return;
-        }
-        
-        // Change PRG bank for demonstration purposes
-        // This is not how MMC1 actually works, but it's a simplification
-        if addr >= 0xA000 && addr <= 0xBFFF {
-            self.prg_bank = (value as usize) % (self.prg_rom.len() / PRG_ROM_BANK_SIZE);
-            debug!("Changed PRG bank to {}", self.prg_bank);
-        }
-    }
-
-    /// Get the current mirroring mode
-    pub fn get_mirroring(&self) -> Mirroring {
-        self.mirroring
-    }
-
-    /// Read a byte from the CHR ROM/RAM
+    /// Read a byte from the CHR ROM/RAM (PPU space)
     pub fn read_chr(&self, addr: u16) -> u8 {
-        if addr < 0x2000 {
-            let chr_addr = addr as usize;
-            if chr_addr < self.chr.len() {
-                self.chr[chr_addr]
-            } else {
-                warn!("Read from invalid CHR address: ${:04X}", addr);
-                0
-            }
-        } else {
-            warn!("Read from invalid CHR address: ${:04X}", addr);
-            0
-        }
+        self.mapper.borrow().read_chr(addr)
     }
 
-    /// Write a byte to the CHR ROM/RAM
-    pub fn write_chr(&mut self, addr: u16, value: u8) {
-        if addr < 0x2000 {
-            let chr_addr = addr as usize;
-            if chr_addr < self.chr.len() {
-                if self.chr_is_ram {
-                    self.chr[chr_addr] = value;
-                } else {
-                    warn!("Attempted write to read-only CHR ROM: ${:04X} = ${:02X}", addr, value);
-                }
-            } else {
-                warn!("Write to invalid CHR address: ${:04X} = ${:02X}", addr, value);
-            }
-        } else {
-            warn!("Write to invalid CHR address: ${:04X} = ${:02X}", addr, value);
-        }
+    /// Write a byte to the CHR ROM/RAM (PPU space)
+    pub fn write_chr(&self, addr: u16, value: u8) {
+        self.mapper.borrow_mut().write_chr(addr, value);
+    }
+
+    /// Get the current mirroring mode (may be overridden by mapper)
+    pub fn get_mirroring(&self) -> Mirroring {
+        self.mapper.borrow().mirroring()
+    }
+
+    /// Check if the mapper has triggered an IRQ
+    pub fn irq_triggered(&self) -> bool {
+        self.mapper.borrow().irq_triggered()
+    }
+
+    /// Acknowledge an IRQ
+    pub fn acknowledge_irq(&self) {
+        self.mapper.borrow_mut().acknowledge_irq();
+    }
+
+    /// Notify the mapper that a scanline has been completed
+    pub fn notify_scanline(&self) {
+        self.mapper.borrow_mut().notify_scanline();
+    }
+
+    /// Get the mapper number
+    pub fn mapper_number(&self) -> u8 {
+        self.mapper_number
+    }
+
+    /// Save the cartridge RAM to a byte vector (for battery-backed RAM)
+    pub fn save_ram(&self) -> Vec<u8> {
+        // This would be implemented to save the PRG RAM for battery-backed games
+        Vec::new()
+    }
+
+    /// Load the cartridge RAM from a byte vector (for battery-backed RAM)
+    pub fn load_ram(&self, data: &[u8]) {
+        self.mapper.borrow_mut().load_ram(data);
     }
 }
 
 impl fmt::Debug for Cartridge {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Cartridge")
-            .field("mapper", &self.mapper)
+            .field("mapper", &self.mapper_number)
             .field("mirroring", &self.mirroring)
-            .field("prg_rom_size", &self.prg_rom.len())
-            .field("chr_size", &self.chr.len())
-            .field("chr_is_ram", &self.chr_is_ram)
+            .field("prg_rom_size", &self.prg_rom_size)
+            .field("chr_rom_size", &self.chr_rom_size)
+            .field("prg_ram_size", &self.prg_ram_size)
             .field("has_battery", &self.has_battery)
+            .field("is_pal", &self.is_pal)
             .finish()
+    }
+}
+
+pub trait CartridgeTrait {
+    /// Load save RAM data
+    fn load_ram(&mut self, _data: &[u8]) {
+        // Default implementation does nothing
+        // Override this in mappers that support save RAM
     }
 }
